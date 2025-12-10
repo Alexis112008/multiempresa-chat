@@ -1,7 +1,6 @@
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import mysql from "mysql2/promise";
 import cors from "cors";
 
 const app = express();
@@ -16,23 +15,8 @@ const io = new Server(server, {
   },
 });
 
-// ✅ Conexión a MySQL (Railway)
-// ✅ Conexión a MySQL (InfinityFree)
-let db;
-try {
-  db = await mysql.createConnection({
-    host: "sql207.infinityfree.com",
-    port: 3306,
-    user: "if0_40643133",
-    password: "ClrFHxDzwy",
-    database: "if0_40643133_multivent"
-  });
-
-  console.log("✅ Conectado correctamente a la base de datos Railway");
-} catch (error) {
-  console.error("❌ Error de conexión con Railway:", error.message);
-  process.exit(1);
-}
+// URL de tu API PHP en InfinityFree
+const API_URL = "https://multivent.42web.io/backend/Chat/socket_api.php";
 
 // Mapa para guardar sockets conectados por usuario
 const usuariosConectados = new Map();
@@ -44,8 +28,7 @@ io.on("connection", (socket) => {
   // Registrar usuario conectado
   socket.on("registrarUsuario", (idUsuario) => {
     usuariosConectados.set(idUsuario, socket.id);
-    console.log(`👤 Usuario ${idUsuario} conectado. Total conectados: ${usuariosConectados.size}`);
-    // ✅ Notificar a todos que este usuario está en línea
+    console.log(`👤 Usuario ${idUsuario} conectado. Total: ${usuariosConectados.size}`);
     socket.broadcast.emit('usuarioConectado', { idUsuario, enLinea: true });
   });
 
@@ -59,46 +42,45 @@ io.on("connection", (socket) => {
     }
 
     try {
-      // 🔹 Normalizar IDs (menor primero)
-      const usuario1 = Math.min(idRemitente, idReceptor);
-      const usuario2 = Math.max(idRemitente, idReceptor);
+      // 🔹 Crear o buscar chat
+      const chatResponse = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accion: 'crearChat',
+          idUsuario1: idRemitente,
+          idUsuario2: idReceptor
+        })
+      });
+      
+      const chatData = await chatResponse.json();
+      
+      if (!chatData.success) {
+        throw new Error('Error al crear chat');
+      }
+      
+      const idChat = chatData.idChat;
 
-      // 🔹 Buscar o crear chat
-      const [chatRows] = await db.execute(
-        `SELECT idChat FROM chat 
-         WHERE idUsuario1 = ? AND idUsuario2 = ?
-         LIMIT 1`,
-        [usuario1, usuario2]
-      );
+      // 🔹 Guardar mensaje
+      const mensajeResponse = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accion: 'guardarMensaje',
+          idChat: idChat,
+          idRemitente: idRemitente,
+          mensaje: mensaje
+        })
+      });
+      
+      const mensajeData = await mensajeResponse.json();
 
-      let idChat;
-      if (chatRows.length === 0) {
-        const [insertChat] = await db.execute(
-          `INSERT INTO chat (idUsuario1, idUsuario2, fechaInicio, ultimoMensaje, fechaUltimoMensaje)
-           VALUES (?, ?, NOW(), ?, NOW())`,
-          [usuario1, usuario2, mensaje]
-        );
-        idChat = insertChat.insertId;
-        console.log(`💬 Nuevo chat creado: ${idChat} entre usuarios ${usuario1} y ${usuario2}`);
-      } else {
-        idChat = chatRows[0].idChat;
-        
-        // Actualizar último mensaje
-        await db.execute(
-          `UPDATE chat SET ultimoMensaje = ?, fechaUltimoMensaje = NOW() WHERE idChat = ?`,
-          [mensaje, idChat]
-        );
+      if (!mensajeData.success) {
+        throw new Error('Error al guardar mensaje');
       }
 
-      // 🔹 Insertar mensaje
-      const [insertMensaje] = await db.execute(
-        `INSERT INTO mensaje (idChat, idRemitente, contenido, fechaEnvio, leido)
-         VALUES (?, ?, ?, NOW(), FALSE)`,
-        [idChat, idRemitente, mensaje]
-      );
-
-      const mensajeData = {
-        idMensaje: insertMensaje.insertId,
+      const mensajeCompleto = {
+        idMensaje: mensajeData.idMensaje,
         idChat,
         idRemitente,
         mensaje,
@@ -109,36 +91,19 @@ io.on("connection", (socket) => {
       // 🔹 Enviar al receptor si está conectado
       const idSocketReceptor = usuariosConectados.get(idReceptor);
       if (idSocketReceptor) {
-        io.to(idSocketReceptor).emit("nuevoMensaje", mensajeData);
-        console.log(`📨 Mensaje enviado a usuario ${idReceptor} (socket: ${idSocketReceptor})`);
+        io.to(idSocketReceptor).emit("nuevoMensaje", mensajeCompleto);
+        console.log(`📨 Mensaje enviado a usuario ${idReceptor}`);
       } else {
         console.log(`⚠️ Usuario ${idReceptor} no está conectado`);
       }
 
       // 🔹 Confirmar al remitente
-      socket.emit("mensajeEnviado", mensajeData);
-      console.log(`✅ Mensaje guardado: Chat ${idChat}, de ${idRemitente} a ${idReceptor}`);
+      socket.emit("mensajeEnviado", mensajeCompleto);
+      console.log(`✅ Mensaje guardado: Chat ${idChat}`);
 
     } catch (err) {
       console.error("❌ Error al guardar mensaje:", err.message);
       socket.emit("error", { message: "Error al enviar mensaje" });
-    }
-  });
-
-  // 🔹 Marcar mensajes como leídos
-  socket.on("marcarLeido", async (data) => {
-    const { idChat, idUsuario } = data;
-    
-    try {
-      await db.execute(
-        `UPDATE mensaje 
-         SET leido = TRUE 
-         WHERE idChat = ? AND idRemitente != ? AND leido = FALSE`,
-        [idChat, idUsuario]
-      );
-      console.log(`✅ Mensajes marcados como leídos en chat ${idChat}`);
-    } catch (err) {
-      console.error("❌ Error al marcar mensajes:", err.message);
     }
   });
 
@@ -160,8 +125,7 @@ io.on("connection", (socket) => {
     for (const [idUsuario, idSocket] of usuariosConectados.entries()) {
       if (idSocket === socket.id) {
         usuariosConectados.delete(idUsuario);
-        console.log(`🔴 Usuario ${idUsuario} desconectado. Total conectados: ${usuariosConectados.size}`);
-        // ✅ Notificar a todos que este usuario se desconectó
+        console.log(`🔴 Usuario ${idUsuario} desconectado. Total: ${usuariosConectados.size}`);
         socket.broadcast.emit('usuarioConectado', { idUsuario, enLinea: false });
         break;
       }
@@ -169,7 +133,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// 🚀 Iniciar servidor - CAMBIOS PARA RENDER
+// 🚀 Iniciar servidor
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor Socket.IO corriendo en puerto ${PORT}`);
