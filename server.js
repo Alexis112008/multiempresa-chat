@@ -1,3 +1,4 @@
+import fetch from "node-fetch";
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -102,9 +103,11 @@ io.on("connection", (socket) => {
       console.log(`✅ Mensaje guardado: Chat ${idChat}`);
 
     } catch (err) {
-      console.error("❌ Error al guardar mensaje:", err.message);
-      socket.emit("error", { message: "Error al enviar mensaje" });
-    }
+  console.error("❌ ERROR REAL EN NODE:", err);
+  socket.emit("error", {
+    message: err.message || "Fallo Node → PHP"
+  });
+}
   });
 
   // 🔹 Usuario está escribiendo
