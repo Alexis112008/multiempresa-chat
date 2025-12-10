@@ -1,8 +1,8 @@
-import fetch from "node-fetch";
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import mysql from "mysql2/promise";
 
 const app = express();
 app.use(cors());
@@ -12,14 +12,19 @@ const server = createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"],
-  },
+    methods: ["GET", "POST"]
+  }
 });
 
-// URL de tu API PHP en InfinityFree
-const API_URL = "https://multivent.42web.io/backend/Chat/socket_api.php";
+// 🔹 Conexión directa a tu base de datos InfinityFree
+const db = await mysql.createConnection({
+  host: 'sql207.infinityfree.com',
+  user: 'if0_40643133',
+  password: 'ClrFHxDzwy',
+  database: 'if0_40643133_multivent'
+});
 
-// Mapa para guardar sockets conectados por usuario
+// 🔹 Guardar sockets conectados
 const usuariosConectados = new Map();
 
 // 📡 Lógica de Socket.IO
@@ -36,52 +41,38 @@ io.on("connection", (socket) => {
   // Escuchar envío de mensajes
   socket.on("enviarMensaje", async (data) => {
     const { idRemitente, idReceptor, mensaje } = data;
-    
+
     if (!idRemitente || !idReceptor || !mensaje) {
       socket.emit("error", { message: "Datos incompletos" });
       return;
     }
 
     try {
-      // 🔹 Crear o buscar chat
-      const chatResponse = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          accion: 'crearChat',
-          idUsuario1: idRemitente,
-          idUsuario2: idReceptor
-        })
-      });
-      
-      const chatData = await chatResponse.json();
-      
-      if (!chatData.success) {
-        throw new Error('Error al crear chat');
+      // 🔹 Buscar o crear chat
+      const [rows] = await db.execute(
+        'SELECT idChat FROM chat WHERE (idUsuario1=? AND idUsuario2=?) OR (idUsuario1=? AND idUsuario2=?)',
+        [idRemitente, idReceptor, idReceptor, idRemitente]
+      );
+
+      let idChat;
+      if (rows.length > 0) {
+        idChat = rows[0].idChat;
+      } else {
+        const [result] = await db.execute(
+          'INSERT INTO chat (idUsuario1, idUsuario2, fechaInicio) VALUES (?, ?, NOW())',
+          [Math.min(idRemitente, idReceptor), Math.max(idRemitente, idReceptor)]
+        );
+        idChat = result.insertId;
       }
-      
-      const idChat = chatData.idChat;
 
       // 🔹 Guardar mensaje
-      const mensajeResponse = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          accion: 'guardarMensaje',
-          idChat: idChat,
-          idRemitente: idRemitente,
-          mensaje: mensaje
-        })
-      });
-      
-      const mensajeData = await mensajeResponse.json();
-
-      if (!mensajeData.success) {
-        throw new Error('Error al guardar mensaje');
-      }
+      const [msgResult] = await db.execute(
+        'INSERT INTO mensaje (idChat, idRemitente, contenido, fechaEnvio, leido) VALUES (?, ?, ?, NOW(), FALSE)',
+        [idChat, idRemitente, mensaje]
+      );
 
       const mensajeCompleto = {
-        idMensaje: mensajeData.idMensaje,
+        idMensaje: msgResult.insertId,
         idChat,
         idRemitente,
         mensaje,
@@ -91,34 +82,26 @@ io.on("connection", (socket) => {
 
       // 🔹 Enviar al receptor si está conectado
       const idSocketReceptor = usuariosConectados.get(idReceptor);
-      if (idSocketReceptor) {
-        io.to(idSocketReceptor).emit("nuevoMensaje", mensajeCompleto);
-        console.log(`📨 Mensaje enviado a usuario ${idReceptor}`);
-      } else {
-        console.log(`⚠️ Usuario ${idReceptor} no está conectado`);
-      }
+      if (idSocketReceptor) io.to(idSocketReceptor).emit("nuevoMensaje", mensajeCompleto);
 
       // 🔹 Confirmar al remitente
       socket.emit("mensajeEnviado", mensajeCompleto);
       console.log(`✅ Mensaje guardado: Chat ${idChat}`);
 
     } catch (err) {
-  console.error("❌ ERROR REAL EN NODE:", err);
-  socket.emit("error", {
-    message: err.message || "Fallo Node → PHP"
-  });
-}
+      console.error("❌ ERROR EN NODE:", err);
+      socket.emit("error", { message: err.message || "Fallo Node → MySQL" });
+    }
   });
 
-  // 🔹 Usuario está escribiendo
+  // Usuario está escribiendo
   socket.on("escribiendo", (data) => {
     const { idReceptor, escribiendo } = data;
-    
     const idSocketReceptor = usuariosConectados.get(idReceptor);
     if (idSocketReceptor) {
       io.to(idSocketReceptor).emit("usuarioEscribiendo", {
         idUsuario: data.idRemitente,
-        escribiendo: escribiendo
+        escribiendo
       });
     }
   });
