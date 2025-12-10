@@ -3,6 +3,7 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import cors from "cors";
 import mysql from "mysql2/promise";
+import url from "url";
 
 const app = express();
 app.use(cors());
@@ -16,12 +17,19 @@ const io = new Server(server, {
   }
 });
 
-// 🔹 Conexión directa a tu base de datos InfinityFree
+// 🔹 Conexión a MySQL usando variable de entorno MYSQL_URL
+if (!process.env.MYSQL_URL) {
+  console.error("❌ No se encontró la variable de entorno MYSQL_URL");
+  process.exit(1);
+}
+
+const params = new url.URL(process.env.MYSQL_URL);
 const db = await mysql.createConnection({
-  host: 'sql207.infinityfree.com',
-  user: 'if0_40643133',
-  password: 'ClrFHxDzwy',
-  database: 'if0_40643133_multivent'
+  host: params.hostname,
+  user: params.username,
+  password: params.password,
+  database: params.pathname.substring(1),
+  port: params.port
 });
 
 // 🔹 Guardar sockets conectados
